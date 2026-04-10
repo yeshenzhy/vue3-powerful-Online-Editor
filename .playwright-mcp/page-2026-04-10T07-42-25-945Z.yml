@@ -1,0 +1,25 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]: Vue3 Admin
+    - menubar [ref=e6]:
+      - menuitem "工作台" [ref=e7] [cursor=pointer]:
+        - img [ref=e9]
+        - text: 工作台
+      - menuitem "系统管理" [ref=e13]:
+        - generic [ref=e14] [cursor=pointer]:
+          - img [ref=e16]
+          - generic [ref=e18]: 系统管理
+          - img [ref=e20]
+  - generic [ref=e22]:
+    - generic [ref=e23]:
+      - generic [ref=e24]: 工作台
+      - generic [ref=e25]:
+        - generic [ref=e26]: 管理员
+        - button "退出" [ref=e27] [cursor=pointer]:
+          - generic [ref=e28]: 退出
+    - main [ref=e29]:
+      - generic [ref=e30]:
+        - generic [ref=e31]: 工作台
+        - generic [ref=e32]:
+          - paragraph [ref=e33]: 你好，管理员。
+          - paragraph [ref=e34]: 当前权限码数量：7（菜单 / 页面 / 按钮共用同一套标识）
