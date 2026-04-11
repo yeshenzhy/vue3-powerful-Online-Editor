@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { oneDark } from '@codemirror/theme-one-dark'
-import { Close, FullScreen, Monitor, Reading, TopRight } from '@element-plus/icons-vue'
+import { Close, FullScreen, Monitor, Reading, Search, TopRight } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { storeToRefs } from 'pinia'
-import { nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { Codemirror } from 'vue-codemirror'
 
 import { usePlaygroundStore } from '@/stores/playground'
@@ -14,10 +14,20 @@ import {
 import {
   compileSfcToModule,
   createPreviewBlobUrl,
+  PLAYGROUND_CONSOLE_MESSAGE_TYPE,
+  PLAYGROUND_IFRAME_RUNTIME_TYPE,
   resolveImportMapForPreview,
+  validateImportMapUrls,
 } from '@/utils/sfcPlayground'
 
 type EditorTab = 'sfc' | 'importmap'
+
+/** 预览 iframe 转发的一行控制台输出 */
+type PreviewConsoleLine = {
+  level: string
+  text: string
+  ts: number
+}
 
 const playground = usePlaygroundStore()
 const { sfcCode, importMapCode } = storeToRefs(playground)
@@ -37,6 +47,18 @@ const cmExtensions = shallowRef(buildSfcCodemirrorExtensions(oneDark))
 const editorWidthPct = ref(52)
 const splitRootRef = ref<HTMLElement | null>(null)
 const splitDragging = ref(false)
+
+/** 预览 iframe 与底部控制台之间的垂直分割 */
+const previewStackRef = ref<HTMLElement | null>(null)
+const previewConsoleSplitDragging = ref(false)
+/**
+ * 控制台最小高度（px）：仅保留「预览控制台」标题行 + 内边距，再小则无法辨认标题
+ */
+const PREVIEW_CONSOLE_HEAD_MIN_PX = 40
+/** 控制台当前高度（px，含标题与输出区） */
+const previewConsoleHeightPx = ref(168)
+/** 预览区（iframe）在垂直分割下保留的最小高度（px） */
+const PREVIEW_IFRAME_MIN_PX = 100
 
 /**
  * 拖拽分割条：调整编辑区与预览区宽度。
@@ -80,6 +102,41 @@ function onSplitResizeStart(e: MouseEvent) {
   document.body.style.userSelect = 'none'
 }
 
+/**
+ * 垂直分割条：调整预览 iframe 与「预览控制台」高度
+ */
+function onPreviewConsoleResizeStart(e: MouseEvent) {
+  const stack = previewStackRef.value
+  if (!stack) return
+  const startY = e.clientY
+  const startH = previewConsoleHeightPx.value
+  const splitterH = 6
+  previewConsoleSplitDragging.value = true
+  document.body.style.cursor = 'row-resize'
+  document.body.style.userSelect = 'none'
+  const onMove = (ev: MouseEvent) => {
+    const dy = ev.clientY - startY
+    const next = startH - dy
+    const stackH = stack.getBoundingClientRect().height
+    const maxConsole = Math.max(
+      PREVIEW_CONSOLE_HEAD_MIN_PX,
+      stackH - splitterH - PREVIEW_IFRAME_MIN_PX,
+    )
+    previewConsoleHeightPx.value = Math.round(
+      Math.min(maxConsole, Math.max(PREVIEW_CONSOLE_HEAD_MIN_PX, next)),
+    )
+  }
+  const onUp = () => {
+    previewConsoleSplitDragging.value = false
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+    document.body.style.removeProperty('cursor')
+    document.body.style.removeProperty('user-select')
+  }
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+}
+
 watch(
   editorTab,
   (tab) => {
@@ -96,6 +153,13 @@ let revokePrev: (() => void) | null = null
 const compileError = ref('')
 const runtimeError = ref('')
 const running = ref(false)
+const formatting = ref(false)
+
+const previewFrameRef = ref<HTMLIFrameElement | null>(null)
+const consoleLines = ref<PreviewConsoleLine[]>([])
+
+const commandPaletteOpen = ref(false)
+const commandQuery = ref('')
 
 function revokePreview() {
   if (previewPaneRef.value && document.fullscreenElement === previewPaneRef.value) {
@@ -116,17 +180,168 @@ function flushEditorToBackingRefs() {
   else playground.setImportMapCode(text)
 }
 
+function clearPreviewConsole() {
+  consoleLines.value = []
+}
+
+function pushPreviewConsoleLine(level: string, parts: string[]) {
+  const next = [...consoleLines.value, { level, text: parts.join(' '), ts: Date.now() }]
+  consoleLines.value = next.length > 300 ? next.slice(-300) : next
+}
+
+function onPreviewPostMessage(ev: MessageEvent) {
+  if (!previewFrameRef.value || ev.source !== previewFrameRef.value.contentWindow) return
+  const d = ev.data as Record<string, unknown>
+  if (!d || typeof d !== 'object') return
+
+  if (d.type === PLAYGROUND_CONSOLE_MESSAGE_TYPE) {
+    const level = String((d as { level?: string }).level || 'log')
+    const parts = (d as { parts?: unknown[] }).parts
+    if (!Array.isArray(parts)) return
+    pushPreviewConsoleLine(level, parts.map((x) => String(x)))
+    return
+  }
+
+  if (d.type === PLAYGROUND_IFRAME_RUNTIME_TYPE) {
+    const message = String((d as { message?: string }).message || '运行时错误')
+    const stack = typeof (d as { stack?: unknown }).stack === 'string' ? (d.stack as string) : ''
+    const info = typeof (d as { info?: unknown }).info === 'string' ? (d.info as string) : ''
+    const source = typeof (d as { source?: unknown }).source === 'string' ? (d.source as string) : ''
+    const lines = [source ? `[${source}] ${message}` : message, info, stack].filter(Boolean)
+    /** 运行时错误仅在左侧编辑区下方展示，避免与右侧预览区重复 */
+    runtimeError.value = lines.join('\n')
+  }
+}
+
+/**
+ * 使用 Prettier 分块格式化当前标签对应文档（动态加载以减小首包）
+ */
+async function handleFormat() {
+  flushEditorToBackingRefs()
+  formatting.value = true
+  try {
+    const { formatImportMapJson, formatVueSfc } = await import('@/utils/playgroundFormat')
+    if (editorTab.value === 'importmap') {
+      const formatted = await formatImportMapJson(importMapCode.value)
+      playground.setImportMapCode(formatted)
+      activeEditorText.value = formatted
+    } else {
+      const formatted = await formatVueSfc(sfcCode.value)
+      playground.setSfcCode(formatted)
+      activeEditorText.value = formatted
+    }
+    ElMessage.success('已格式化')
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '格式化失败')
+  } finally {
+    formatting.value = false
+  }
+}
+
+type PaletteCmd = { id: string; label: string; hint: string; disabled?: boolean; run: () => void }
+
+const filteredPaletteCommands = computed(() => {
+  const q = commandQuery.value.trim().toLowerCase()
+  const cmds: PaletteCmd[] = [
+    {
+      id: 'format',
+      label: '格式化当前文档',
+      hint: 'Shift+Alt+F',
+      run: () => {
+        void handleFormat()
+      },
+    },
+    {
+      id: 'run',
+      label: '运行预览',
+      hint: 'Ctrl+S',
+      run: () => {
+        void handleRun()
+      },
+    },
+    {
+      id: 'newtab',
+      label: '新标签页打开预览',
+      hint: '',
+      disabled: !previewUrl.value,
+      run: () => openPreviewInNewTab(),
+    },
+    {
+      id: 'clear-console',
+      label: '清空预览控制台',
+      hint: '',
+      disabled: consoleLines.value.length === 0,
+      run: () => clearPreviewConsole(),
+    },
+  ]
+  return cmds.filter(
+    (c) =>
+      !c.disabled &&
+      (q === '' ||
+        c.label.toLowerCase().includes(q) ||
+        c.hint.toLowerCase().includes(q) ||
+        c.id.includes(q)),
+  )
+})
+
+function runPaletteCommand(cmd: PaletteCmd) {
+  commandPaletteOpen.value = false
+  commandQuery.value = ''
+  cmd.run()
+}
+
+function onCommandPaletteOpened() {
+  void nextTick(() => {
+    const el = document.querySelector('.command-palette-dialog input') as HTMLInputElement | null
+    el?.focus()
+  })
+}
+
+function onPlaygroundGlobalKeydown(e: KeyboardEvent) {
+  const target = e.target as HTMLElement | null
+  const inDialog = Boolean(target?.closest?.('.el-dialog'))
+  const mod = e.metaKey || e.ctrlKey
+  if (mod && e.shiftKey && (e.key === 'p' || e.key === 'P')) {
+    if (inDialog) return
+    e.preventDefault()
+    commandPaletteOpen.value = true
+    commandQuery.value = ''
+    void nextTick(() => {
+      const el = document.querySelector('.command-palette-dialog input') as HTMLInputElement | null
+      el?.focus()
+    })
+    return
+  }
+  if (mod && e.key === 's') {
+    e.preventDefault()
+    void handleRun()
+    return
+  }
+  if (e.shiftKey && e.altKey && (e.key === 'f' || e.key === 'F')) {
+    e.preventDefault()
+    void handleFormat()
+  }
+}
+
 /**
  * 编译并刷新预览 iframe
  */
 async function handleRun() {
   compileError.value = ''
   runtimeError.value = ''
+  clearPreviewConsole()
   flushEditorToBackingRefs()
   const mapResult = resolveImportMapForPreview(importMapCode.value)
   if (!mapResult.ok) {
     compileError.value = mapResult.message
     ElMessage.error(mapResult.message)
+    return
+  }
+
+  const urlCheck = validateImportMapUrls(mapResult.map)
+  if (!urlCheck.ok) {
+    compileError.value = urlCheck.message
+    ElMessage.error(urlCheck.message)
     return
   }
 
@@ -160,16 +375,9 @@ function resetSample() {
 
 function onFrameLoad(ev: Event) {
   const el = ev.target as HTMLIFrameElement
-  const win = el.contentWindow
-  if (!win) return
+  if (!el.contentWindow) return
+  /** 运行时错误统一由 iframe 内 postMessage（Vue errorHandler / window.error）上报，避免与父页重复监听 */
   runtimeError.value = ''
-  win.addEventListener('error', (e) => {
-    runtimeError.value = e.message || String(e.error)
-  })
-  win.addEventListener('unhandledrejection', (e) => {
-    const r = e.reason
-    runtimeError.value = r instanceof Error ? r.message : String(r)
-  })
 }
 
 /** 预览整块区域（用于全屏） */
@@ -208,12 +416,16 @@ function onFullscreenChange() {
 
 onMounted(async () => {
   document.addEventListener('fullscreenchange', onFullscreenChange)
+  window.addEventListener('message', onPreviewPostMessage)
+  document.addEventListener('keydown', onPlaygroundGlobalKeydown, true)
   await nextTick()
   void handleRun()
 })
 
 onBeforeUnmount(() => {
   revokePreview()
+  window.removeEventListener('message', onPreviewPostMessage)
+  document.removeEventListener('keydown', onPlaygroundGlobalKeydown, true)
   document.removeEventListener('fullscreenchange', onFullscreenChange)
   if (previewPaneRef.value && document.fullscreenElement === previewPaneRef.value) {
     void document.exitFullscreen()
@@ -243,7 +455,7 @@ onBeforeUnmount(() => {
     <div
       ref="splitRootRef"
       class="split"
-      :class="{ 'is-split-dragging': splitDragging }"
+      :class="{ 'is-split-dragging': splitDragging || previewConsoleSplitDragging }"
     >
       <section
         class="pane pane--editor"
@@ -264,6 +476,30 @@ onBeforeUnmount(() => {
             />
           </el-tabs>
           <div class="pane-actions">
+            <el-tooltip
+              content="命令面板（Ctrl+Shift+P）"
+              placement="bottom"
+            >
+              <el-button
+                size="small"
+                circle
+                @click="
+                  commandPaletteOpen = true;
+                  commandQuery = '';
+                "
+              >
+                <el-icon :size="16">
+                  <Search />
+                </el-icon>
+              </el-button>
+            </el-tooltip>
+            <el-button
+              size="small"
+              :loading="formatting"
+              @click="handleFormat"
+            >
+              格式化
+            </el-button>
             <el-button
               size="small"
               @click="resetSample"
@@ -294,6 +530,12 @@ onBeforeUnmount(() => {
           class="msg msg--err"
         >
           {{ compileError }}
+        </div>
+        <div
+          v-if="runtimeError"
+          class="msg msg--runtime msg--editor-runtime"
+        >
+          预览运行：{{ runtimeError }}
         </div>
       </section>
 
@@ -352,28 +594,111 @@ onBeforeUnmount(() => {
             </el-tooltip>
           </div>
         </div>
-        <!-- 不设 sandbox：allow-scripts + allow-same-origin 会触发 Chrome「可逃逸沙箱」提示，且去掉 same-origin 后父页难以向子 window 挂 error 监听 -->
-        <iframe
-          v-if="previewUrl"
-          class="preview-frame"
-          title="Vue 预览"
-          :src="previewUrl"
-          @load="onFrameLoad"
-        />
         <div
-          v-else
-          class="preview-placeholder"
+          ref="previewStackRef"
+          class="preview-body-stack"
+          :class="{ 'is-console-split-dragging': previewConsoleSplitDragging }"
         >
-          点击「运行预览」编译并渲染
-        </div>
-        <div
-          v-if="runtimeError"
-          class="msg msg--runtime"
-        >
-          运行时：{{ runtimeError }}
+          <template v-if="previewUrl">
+            <div class="preview-stack-preview">
+              <!-- 不设 sandbox：allow-scripts + allow-same-origin 会触发 Chrome「可逃逸沙箱」提示，且去掉 same-origin 后父页难以向子 window 挂 error 监听 -->
+              <iframe
+                ref="previewFrameRef"
+                class="preview-frame"
+                title="Vue 预览"
+                :src="previewUrl"
+                @load="onFrameLoad"
+              />
+            </div>
+            <div
+              class="preview-console-split"
+              title="拖拽调整预览区与控制台高度"
+              @mousedown.prevent="onPreviewConsoleResizeStart"
+            />
+            <div
+              class="preview-console"
+              :style="{
+                height: previewConsoleHeightPx + 'px',
+                minHeight: PREVIEW_CONSOLE_HEAD_MIN_PX + 'px',
+              }"
+            >
+              <div class="preview-console__head">
+                <span class="preview-console__title">预览控制台</span>
+                <el-button
+                  size="small"
+                  text
+                  type="primary"
+                  :disabled="consoleLines.length === 0"
+                  @click="clearPreviewConsole"
+                >
+                  清空
+                </el-button>
+              </div>
+              <div class="preview-console__body">
+                <div
+                  v-if="consoleLines.length === 0"
+                  class="preview-console__empty"
+                >
+                  iframe 内 console.log / warn / error 会显示在这里
+                </div>
+                <div
+                  v-for="(line, idx) in consoleLines"
+                  v-else
+                  :key="line.ts + '-' + idx"
+                  class="preview-console__line"
+                  :class="'is-' + line.level"
+                >
+                  <span class="preview-console__lvl">{{ line.level }}</span>
+                  <span class="preview-console__text">{{ line.text }}</span>
+                </div>
+              </div>
+            </div>
+          </template>
+          <div
+            v-else
+            class="preview-placeholder"
+          >
+            点击「运行预览」编译并渲染
+          </div>
         </div>
       </section>
     </div>
+
+    <el-dialog
+      v-model="commandPaletteOpen"
+      title="命令面板"
+      width="420px"
+      class="command-palette-dialog"
+      append-to-body
+      destroy-on-close
+      @opened="onCommandPaletteOpened"
+    >
+      <el-input
+        v-model="commandQuery"
+        placeholder="输入过滤…"
+        clearable
+      />
+      <ul class="command-palette-list">
+        <li
+          v-for="cmd in filteredPaletteCommands"
+          :key="cmd.id"
+          class="command-palette-item"
+          @click="runPaletteCommand(cmd)"
+        >
+          <span class="command-palette-label">{{ cmd.label }}</span>
+          <span
+            v-if="cmd.hint"
+            class="command-palette-hint"
+          >{{ cmd.hint }}</span>
+        </li>
+        <li
+          v-if="filteredPaletteCommands.length === 0"
+          class="command-palette-empty"
+        >
+          无匹配命令
+        </li>
+      </ul>
+    </el-dialog>
   </div>
 </template>
 
@@ -587,17 +912,125 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 
-.preview-frame {
-  flex: 1;
-  width: 100%;
+.preview-body-stack {
+  flex: 1 1 0;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.preview-stack-preview {
+  flex: 1 1 0;
+  min-height: 100px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.preview-console-split {
+  flex: 0 0 6px;
+  cursor: row-resize;
+  background: transparent;
+  margin: -3px 0;
+  padding: 3px 0;
+  box-sizing: content-box;
+  position: relative;
+  z-index: 2;
+  transition: background 0.12s ease;
+}
+
+.preview-console-split:hover,
+.preview-body-stack.is-console-split-dragging .preview-console-split {
+  background: rgba(97, 175, 239, 0.45);
+}
+
+.preview-frame {
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
   border: none;
   background: #fff;
 }
 
-.preview-placeholder {
+.preview-console {
+  flex: 0 0 auto;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-top: 1px solid var(--el-border-color-lighter);
+  background: #1e1e1e;
+  color: #d4d4d4;
+}
+
+.preview-body-stack > .preview-placeholder {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.preview-console__head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: nowrap;
+  padding: 6px 10px;
+  background: #252526;
+  font-size: 12px;
+}
+
+.preview-console__title {
+  font-weight: 600;
+  color: #ccc;
+}
+
+.preview-console__body {
   flex: 1;
   min-height: 0;
+  overflow: auto;
+  padding: 6px 10px;
+  font-family: ui-monospace, 'Cascadia Code', monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.preview-console__empty {
+  color: #888;
+}
+
+.preview-console__line {
+  margin: 3px 0;
+  word-break: break-word;
+}
+
+.preview-console__lvl {
+  display: inline-block;
+  min-width: 52px;
+  margin-right: 8px;
+  color: #858585;
+  text-transform: uppercase;
+  font-size: 10px;
+  vertical-align: top;
+}
+
+.preview-console__text {
+  color: #d4d4d4;
+}
+
+.preview-console__line.is-warn .preview-console__lvl {
+  color: #cca700;
+}
+
+.preview-console__line.is-error .preview-console__lvl {
+  color: #f14c4c;
+}
+
+.preview-console__line.is-error .preview-console__text {
+  color: #f48771;
+}
+
+.preview-placeholder {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -622,6 +1055,13 @@ onBeforeUnmount(() => {
 .msg--runtime {
   background: #fdf6ec;
   color: #e6a23c;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+/** 左侧编辑区底部：与右侧预览区 runtime 同源，便于不扭头即可看到 ReferenceError 等 */
+.msg--editor-runtime {
+  max-height: 160px;
+  overflow: auto;
   border-top: 1px solid var(--el-border-color-lighter);
 }
 
@@ -650,5 +1090,51 @@ onBeforeUnmount(() => {
   background: rgba(120, 120, 120, 0.45) !important;
   color: #eee !important;
   box-shadow: inset 3px 0 0 #999;
+}
+
+.command-palette-dialog .el-dialog__body {
+  padding-top: 8px;
+}
+
+.command-palette-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.command-palette-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  margin: 2px 0;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.command-palette-item:hover {
+  background: var(--el-fill-color-light);
+}
+
+.command-palette-label {
+  color: var(--el-text-color-primary);
+}
+
+.command-palette-hint {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  font-family: ui-monospace, monospace;
+}
+
+.command-palette-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
 }
 </style>

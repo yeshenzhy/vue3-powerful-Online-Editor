@@ -357,6 +357,66 @@ export function parseImportMap(raw: string): { ok: true; map: Record<string, unk
  * 只需在 JSON 里「增补」模块即可在运行预览时一并加载，无需每次复制整份 vue / element-plus 等条目。
  * @param userRaw Import Map 标签页中的 JSON 字符串
  */
+/**
+ * 校验合并后的 import map：`imports` / `scopes` 中地址须为可解析的 http(s) 或 data: URL，减少 iframe 模块加载失败无提示
+ * @param map `resolveImportMapForPreview` 或等价对象
+ */
+export function validateImportMapUrls(map: Record<string, unknown>): { ok: true } | { ok: false; message: string } {
+  const imports = map.imports
+  if (!imports || typeof imports !== 'object' || Array.isArray(imports)) {
+    return { ok: false, message: 'import map 的 imports 须为对象' }
+  }
+  for (const [specifier, url] of Object.entries(imports as Record<string, unknown>)) {
+    if (typeof url !== 'string') {
+      return { ok: false, message: `imports「${specifier}」的值须为字符串 URL，当前为 ${typeof url}` }
+    }
+    const s = url.trim()
+    if (!s) return { ok: false, message: `imports「${specifier}」不能为空字符串` }
+    try {
+      const u = new URL(s)
+      if (!['http:', 'https:', 'data:'].includes(u.protocol)) {
+        return {
+          ok: false,
+          message: `imports「${specifier}」仅支持 http、https 或 data 协议，当前为 ${u.protocol}`,
+        }
+      }
+    } catch {
+      return { ok: false, message: `imports「${specifier}」不是合法 URL：${url}` }
+    }
+  }
+
+  if (map.scopes !== undefined && map.scopes !== null) {
+    if (typeof map.scopes !== 'object' || Array.isArray(map.scopes)) {
+      return { ok: false, message: 'scopes 须为对象' }
+    }
+    for (const [scopeKey, scopeImports] of Object.entries(map.scopes as Record<string, unknown>)) {
+      try {
+        new URL(scopeKey)
+      } catch {
+        return { ok: false, message: `scopes 的键须为合法 URL 前缀：${scopeKey}` }
+      }
+      if (typeof scopeImports !== 'object' || scopeImports === null || Array.isArray(scopeImports)) {
+        return { ok: false, message: `scopes「${scopeKey}」下须为对象（子 imports）` }
+      }
+      for (const [sp, u] of Object.entries(scopeImports as Record<string, unknown>)) {
+        if (typeof u !== 'string' || !u.trim()) {
+          return { ok: false, message: `scopes「${scopeKey}」中「${sp}」须为非空字符串 URL` }
+        }
+        try {
+          const parsed = new URL(u.trim())
+          if (!['http:', 'https:', 'data:'].includes(parsed.protocol)) {
+            return { ok: false, message: `scopes「${scopeKey}」中「${sp}」仅支持 http(s) 或 data URL` }
+          }
+        } catch {
+          return { ok: false, message: `scopes「${scopeKey}」中「${sp}」不是合法 URL` }
+        }
+      }
+    }
+  }
+
+  return { ok: true }
+}
+
 export function resolveImportMapForPreview(
   userRaw: string,
 ): { ok: true; map: Record<string, unknown> } | { ok: false; message: string } {
@@ -503,6 +563,16 @@ function injectVueScopeIdOption(code: string, scopeIdAttr: string): string {
 }
 
 /**
+ * 预览 iframe → 父页：控制台日志条目的 `postMessage` data.type
+ */
+export const PLAYGROUND_CONSOLE_MESSAGE_TYPE = 'PLAYGROUND_PREVIEW_LOG' as const
+
+/**
+ * 预览 iframe → 父页：Vue errorHandler / window 错误 /未处理 Promise 的 data.type
+ */
+export const PLAYGROUND_IFRAME_RUNTIME_TYPE = 'PLAYGROUND_IFRAME_RUNTIME' as const
+
+/**
  * export default → __PAGE__，并注入 createApp + Element Plus 插件
  * 插件导入使用 ElementPlusPlugin，避免与 `@element-plus/icons-vue` 中的 `ElementPlus` 图标同名冲突
  * @param compiledJs compileScript 输出
@@ -525,7 +595,28 @@ function injectAppMount(compiledJs: string, options?: { scopeIdAttr?: string }):
     importLines.push(`import ElementPlusPlugin from 'element-plus'`)
   }
   const head = importLines.length ? `${importLines.join('\n')}\n` : ''
-  return `${head}${code}\ncreateApp(__PAGE__).use(${epPluginId}).mount('#app')\n`
+  const runtimeType = JSON.stringify(PLAYGROUND_IFRAME_RUNTIME_TYPE)
+  return `${head}${code}
+const __pg_app__ = createApp(__PAGE__)
+__pg_app__.config.errorHandler = function (err, _inst, info) {
+  try {
+    var msg = err != null && err.message != null ? String(err.message) : String(err)
+    var stack = err != null && err.stack ? String(err.stack) : ''
+    parent.postMessage(
+      {
+        type: ${runtimeType},
+        source: 'vue',
+        message: msg,
+        stack: stack,
+        info: info != null ? String(info) : '',
+        ts: Date.now(),
+      },
+      '*',
+    )
+  } catch (_e) {}
+}
+__pg_app__.use(${epPluginId}).mount('#app')
+`
 }
 
 /** Element Plus 样式（预览 iframe） */
@@ -555,6 +646,73 @@ export function createPreviewBlobUrl(
   compiledCss: string,
 ): PreviewBlob {
   const safeMod = moduleCode.replace(/<\/script/gi, '<\\/script')
+  /** 将预览页 console 与全局错误转发到父窗口（fmtVal 可展开 Vue ref/computed 与普通对象，避免 [object Object]） */
+  const consoleBridge = `(function(){
+var T=${JSON.stringify(PLAYGROUND_CONSOLE_MESSAGE_TYPE)};
+var R=${JSON.stringify(PLAYGROUND_IFRAME_RUNTIME_TYPE)};
+function fmtVal(x,d){
+d=d||0;if(d>12)return'[MaxDepth]';
+if(x===null||x===undefined)return String(x);
+var t=typeof x;
+if(t==='bigint')return String(x)+'n';
+if(t==='number'||t==='boolean')return String(x);
+if(t==='string')return JSON.stringify(x);
+if(t==='function')return '[Function '+(x.name||'anonymous')+']';
+if(x instanceof Error)return x.name+': '+x.message+(x.stack?'\\n'+x.stack:'');
+if(x instanceof Date)return 'Date('+x.toISOString()+')';
+if(x instanceof RegExp)return String(x);
+if(Array.isArray(x))return '['+x.map(function(e){return fmtVal(e,d+1)}).join(', ')+']';
+if(t==='object'){
+if(x.__v_isRef){
+try{var iv=x.value;var lb=x.effect?'ComputedRef':'Ref';return lb+'('+fmtVal(iv,d+1)+')'}catch(err){return 'Ref<?>'}
+}
+try{
+var seen=new WeakSet();
+return JSON.stringify(x,function(k,v){
+if(v===undefined)return '[undefined]';
+if(typeof v==='function')return '[Function '+(v.name||'')+']';
+if(typeof v==='bigint')return String(v)+'n';
+if(v&&typeof v==='object'){
+if(v.__v_isRef){try{return v.value}catch(e){return '[Ref]'}}
+if(seen.has(v))return '[Circular]';
+seen.add(v);
+}
+return v;
+},2);
+}catch(e){
+try{
+var ks=Object.keys(x);
+if(!ks.length)return Object.prototype.toString.call(x);
+return '{ '+ks.map(function(k){try{return JSON.stringify(k)+': '+fmtVal(x[k],d+1)}catch(e2){return JSON.stringify(k)+': ?'}}).join(', ')+' }';
+}catch(e3){return Object.prototype.toString.call(x)}
+}
+}
+return String(x);
+}
+function parts(a){return Array.prototype.slice.call(a).map(function(x){return fmtVal(x,0)})}
+['log','info','warn','error','debug'].forEach(function(level){
+var orig=console[level];
+console[level]=function(){
+try{parent.postMessage({type:T,level:level,parts:parts(arguments),ts:Date.now()},'*')}catch(e){}
+return orig.apply(console,arguments);
+};
+});
+window.addEventListener('error',function(ev){
+try{
+var msg=ev.message||'error';
+var stack=ev.error&&ev.error.stack?String(ev.error.stack):'';
+parent.postMessage({type:R,source:'window',message:msg,stack:stack,filename:ev.filename||'',lineno:ev.lineno||0,ts:Date.now()},'*');
+}catch(e){}
+});
+window.addEventListener('unhandledrejection',function(ev){
+try{
+var r=ev.reason;
+var msg=r instanceof Error?r.message:String(r);
+var stack=r instanceof Error&&r.stack?String(r.stack):'';
+parent.postMessage({type:R,source:'rejection',message:msg,stack:stack,ts:Date.now()},'*');
+}catch(e){}
+});
+})();`
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -569,6 +727,7 @@ export function createPreviewBlobUrl(
 </head>
 <body>
   <div id="app"></div>
+  <script>${consoleBridge}</script>
   <script type="module">
 ${safeMod}
   </script>

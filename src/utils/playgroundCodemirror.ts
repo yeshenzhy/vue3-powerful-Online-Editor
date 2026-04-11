@@ -1,10 +1,12 @@
 import { autocompletion, completionKeymap, type Completion, type CompletionContext } from '@codemirror/autocomplete'
 import { cssCompletionSource } from '@codemirror/lang-css'
 import { html, htmlCompletionSourceWith } from '@codemirror/lang-html'
-import { json } from '@codemirror/lang-json'
+import { json, jsonParseLinter } from '@codemirror/lang-json'
 import { localCompletionSource } from '@codemirror/lang-javascript'
 import { sass, sassCompletionSource, sassLanguage } from '@codemirror/lang-sass'
-import { keymap } from '@codemirror/view'
+import { linter, type Diagnostic } from '@codemirror/lint'
+import { parse } from 'vue/compiler-sfc'
+import { keymap, type EditorView } from '@codemirror/view'
 import type { Extension } from '@codemirror/state'
 
 /** 缩进语法 Sass（style 标签 `lang="sass"`）嵌套解析用 */
@@ -546,6 +548,32 @@ function sfcAggregatedCompletionSource(context: CompletionContext) {
   )
 }
 
+/**
+ * SFC 语法树诊断：模板/块级错误带 loc 时映射到文档位置
+ */
+function vueSfcParseLinter(view: EditorView): Diagnostic[] {
+  const doc = view.state.doc
+  const text = doc.toString()
+  const { errors } = parse(text, { filename: 'App.vue' })
+  return errors.map((e: unknown) => {
+    const err = e as Error & {
+      loc?: { start?: { offset?: number }; end?: { offset?: number } }
+    }
+    const msg = err.message || String(e)
+    const start = err.loc?.start?.offset
+    if (typeof start === 'number') {
+      const from = Math.min(Math.max(0, start), doc.length)
+      const endOff = err.loc?.end?.offset
+      const to =
+        typeof endOff === 'number'
+          ? Math.min(Math.max(from + 1, endOff), doc.length)
+          : Math.min(from + 1, doc.length)
+      return { from, to, severity: 'error' as const, message: msg }
+    }
+    return { from: 0, to: Math.min(1, doc.length), severity: 'error' as const, message: msg }
+  })
+}
+
 function importMapCompletionSource(context: CompletionContext) {
   const word = context.matchBefore(/[\w"-]*/)
   if (!word) return null
@@ -564,6 +592,7 @@ export function buildSfcCodemirrorExtensions(theme: Extension): Extension[] {
   return [
     sfcHtmlBase,
     sass(),
+    linter(vueSfcParseLinter, { delay: 320 }),
     autocompletion({
       override: [sfcAggregatedCompletionSource],
       maxRenderedOptions: 140,
@@ -581,6 +610,7 @@ export function buildSfcCodemirrorExtensions(theme: Extension): Extension[] {
 export function buildImportMapCodemirrorExtensions(theme: Extension): Extension[] {
   return [
     json(),
+    linter(jsonParseLinter(), { delay: 280 }),
     autocompletion({
       override: [importMapCompletionSource],
       maxRenderedOptions: 40,
