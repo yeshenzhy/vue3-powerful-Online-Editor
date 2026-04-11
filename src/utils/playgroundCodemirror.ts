@@ -1,8 +1,35 @@
 import { autocompletion, completionKeymap, type Completion, type CompletionContext } from '@codemirror/autocomplete'
-import { html } from '@codemirror/lang-html'
+import { cssCompletionSource } from '@codemirror/lang-css'
+import { html, htmlCompletionSourceWith } from '@codemirror/lang-html'
 import { json } from '@codemirror/lang-json'
+import { localCompletionSource } from '@codemirror/lang-javascript'
+import { sass, sassCompletionSource, sassLanguage } from '@codemirror/lang-sass'
 import { keymap } from '@codemirror/view'
 import type { Extension } from '@codemirror/state'
+
+/** 缩进语法 Sass（style 标签 `lang="sass"`）嵌套解析用 */
+const sassIndentedParser = sassLanguage.configure({ dialect: 'indented' }).parser
+
+/**
+ * 带 Vue SFC 场景的 HTML：为 `lang="scss"` / `lang="sass"` 的 style 挂载 Lezer 解析，避免整段样式被当成纯文本单色显示
+ */
+const sfcHtmlBase = html({
+  nestedLanguages: [
+    {
+      tag: 'style',
+      attrs: (attrs) => attrs.lang === 'scss',
+      parser: sassLanguage.parser,
+    },
+    {
+      tag: 'style',
+      attrs: (attrs) => attrs.lang === 'sass',
+      parser: sassIndentedParser,
+    },
+  ],
+})
+
+/** 模板标签/属性补全（与 lang-html 默认一致） */
+const sfcHtmlCompletion = htmlCompletionSourceWith({})
 
 /** Vue 3组合式 API 与常用运行时 */
 const VUE_COMPOSITION: Completion[] = [
@@ -506,6 +533,19 @@ function sfcCompletionSource(context: CompletionContext) {
   }
 }
 
+/**
+ * 聚合补全：style 内走 CSS/SCSS 语言服务，script 走 JS/本地符号，其余再走 HTML 与 Vue/EP 词表（override 会替换默认源，须显式串联）
+ */
+function sfcAggregatedCompletionSource(context: CompletionContext) {
+  return (
+    cssCompletionSource(context) ??
+    sassCompletionSource(context) ??
+    localCompletionSource(context) ??
+    sfcHtmlCompletion(context) ??
+    sfcCompletionSource(context)
+  )
+}
+
 function importMapCompletionSource(context: CompletionContext) {
   const word = context.matchBefore(/[\w"-]*/)
   if (!word) return null
@@ -522,9 +562,10 @@ function importMapCompletionSource(context: CompletionContext) {
  */
 export function buildSfcCodemirrorExtensions(theme: Extension): Extension[] {
   return [
-    html(),
+    sfcHtmlBase,
+    sass(),
     autocompletion({
-      override: [sfcCompletionSource],
+      override: [sfcAggregatedCompletionSource],
       maxRenderedOptions: 140,
       activateOnTyping: true,
       defaultKeymap: true,

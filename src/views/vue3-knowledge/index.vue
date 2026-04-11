@@ -2,9 +2,11 @@
 import { oneDark } from '@codemirror/theme-one-dark'
 import { Close, FullScreen, Monitor, Reading, TopRight } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import { storeToRefs } from 'pinia'
 import { nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { Codemirror } from 'vue-codemirror'
 
+import { usePlaygroundStore } from '@/stores/playground'
 import {
   buildImportMapCodemirrorExtensions,
   buildSfcCodemirrorExtensions,
@@ -12,23 +14,21 @@ import {
 import {
   compileSfcToModule,
   createPreviewBlobUrl,
-  DEFAULT_IMPORT_MAP,
-  DEFAULT_SFC,
   resolveImportMapForPreview,
 } from '@/utils/sfcPlayground'
 
 type EditorTab = 'sfc' | 'importmap'
 
-const editorTab = ref<EditorTab>('sfc')
+const playground = usePlaygroundStore()
+const { sfcCode, importMapCode } = storeToRefs(playground)
 
-const sfcCode = ref(DEFAULT_SFC)
-const importMapCode = ref(DEFAULT_IMPORT_MAP)
+const editorTab = ref<EditorTab>('sfc')
 
 const activeEditorText = ref('')
 
 watch(activeEditorText, (v) => {
-  if (editorTab.value === 'sfc') sfcCode.value = v
-  else importMapCode.value = v
+  if (editorTab.value === 'sfc') playground.setSfcCode(v)
+  else playground.setImportMapCode(v)
 })
 
 const cmExtensions = shallowRef(buildSfcCodemirrorExtensions(oneDark))
@@ -112,11 +112,8 @@ function revokePreview() {
  */
 function flushEditorToBackingRefs() {
   const text = activeEditorText.value
-  if (editorTab.value === 'sfc') {
-    sfcCode.value = text
-  } else {
-    importMapCode.value = text
-  }
+  if (editorTab.value === 'sfc') playground.setSfcCode(text)
+  else playground.setImportMapCode(text)
 }
 
 /**
@@ -155,11 +152,10 @@ async function handleRun() {
 }
 
 function resetSample() {
-  sfcCode.value = DEFAULT_SFC
-  importMapCode.value = DEFAULT_IMPORT_MAP
-  if (editorTab.value === 'sfc') activeEditorText.value = DEFAULT_SFC
-  else activeEditorText.value = DEFAULT_IMPORT_MAP
-  ElMessage.success('已恢复示例')
+  playground.resetToSample()
+  activeEditorText.value = editorTab.value === 'sfc' ? sfcCode.value : importMapCode.value
+  handleRun()
+  ElMessage.success('已恢复为默认示例')
 }
 
 function onFrameLoad(ev: Event) {
@@ -272,7 +268,7 @@ onBeforeUnmount(() => {
               size="small"
               @click="resetSample"
             >
-              示例
+              重置示例
             </el-button>
             <el-button
               type="primary"
