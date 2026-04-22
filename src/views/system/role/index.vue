@@ -139,21 +139,59 @@ onMounted(load)
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .head-left {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+}
+
+.head-left > span {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-text);
 }
 
 .icon {
   font-size: 20px;
+  color: var(--color-primary);
 }
 
 .desc {
-  margin: 0 0 16px;
-  color: var(--el-text-color-secondary);
-  font-size: 14px;
+  margin: 0 0 20px;
+  padding: 14px 18px;
+  background: linear-gradient(135deg, var(--color-bg) 0%, var(--color-primary-bg) 100%);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--color-primary);
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.desc code {
+  font-size: 12px;
+}
+
+/* 表格美化 */
+:deep(.el-table) {
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+:deep(.el-table th.el-table__cell) {
+  background: var(--color-bg) !important;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+:deep(.el-table td.el-table__cell) {
+  color: var(--color-text);
+}
+
+:deep(.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell) {
+  background: var(--color-bg) !important;
 }
 </style>

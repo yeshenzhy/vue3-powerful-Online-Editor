@@ -236,16 +236,48 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.card-head > span {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-text);
 }
 
 .actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .batch-hint {
-  margin: 0 0 12px;
-  color: var(--el-text-color-secondary);
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  background: var(--color-primary-bg);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
   font-size: 14px;
+}
+
+/* 表格美化 */
+:deep(.el-table) {
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+:deep(.el-table th.el-table__cell) {
+  background: var(--color-bg) !important;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+:deep(.el-table td.el-table__cell) {
+  color: var(--color-text);
+}
+
+:deep(.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell) {
+  background: var(--color-bg) !important;
 }
 </style>

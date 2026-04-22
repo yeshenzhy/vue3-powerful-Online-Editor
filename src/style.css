@@ -1,3 +1,53 @@
+/* Google Fonts: IBM Plex Sans + JetBrains Mono */
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+/* CSS Variables - 设计系统配色 */
+:root {
+  /* 主色调 - 青色系 */
+  --color-primary: #0891B2;
+  --color-primary-light: #22D3EE;
+  --color-primary-dark: #0E7490;
+  --color-primary-bg: #ECFEFF;
+
+  /* 强调色 - 绿色 */
+  --color-accent: #22C55E;
+  --color-accent-light: #4ADE80;
+  --color-accent-dark: #16A34A;
+
+  /* 中性色 */
+  --color-text: #164E63;
+  --color-text-secondary: #64748B;
+  --color-text-muted: #94A3B8;
+  --color-bg: #F8FAFC;
+  --color-bg-elevated: #FFFFFF;
+  --color-border: #E2E8F0;
+  --color-border-light: #F1F5F9;
+
+  /* 深色侧边栏 */
+  --sidebar-bg: #0F172A;
+  --sidebar-bg-hover: #1E293B;
+  --sidebar-text: #CBD5E1;
+  --sidebar-text-active: #22D3EE;
+  --sidebar-border: #1E293B;
+
+  /* 阴影 */
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  --shadow-card: 0 1px 3px 0 rgb(0 0 0 / 0.04), 0 1px 2px -1px rgb(0 0 0 / 0.04);
+
+  /* 圆角 */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+
+  /* 过渡 */
+  --transition-fast: 150ms ease;
+  --transition-normal: 200ms ease;
+  --transition-slow: 300ms ease;
+}
+
 *,
 *::before,
 *::after {
@@ -11,10 +61,178 @@ body,
   min-height: 100%;
 }
 
+html {
+  scroll-behavior: smooth;
+}
+
 body {
-  font-family:
-    'Segoe UI',
-    system-ui,
-    -apple-system,
-    sans-serif;
+  font-family: 'IBM Plex Sans', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--color-text);
+  background: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 代码字体 */
+code, pre, .mono {
+  font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+}
+
+/* 选中文本样式 */
+::selection {
+  background: var(--color-primary-light);
+  color: var(--color-text);
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-muted);
+}
+
+/* Element Plus 主题覆盖 */
+:root {
+  --el-color-primary: var(--color-primary);
+  --el-color-primary-light-3: #67E8F9;
+  --el-color-primary-light-5: #A5F3FC;
+  --el-color-primary-light-7: #CFFAFE;
+  --el-color-primary-light-8: #E0F7FA;
+  --el-color-primary-light-9: #ECFEFF;
+  --el-color-primary-dark-2: var(--color-primary-dark);
+  --el-color-success: var(--color-accent);
+  --el-bg-color: var(--color-bg-elevated);
+  --el-bg-color-page: var(--color-bg);
+  --el-text-color-primary: var(--color-text);
+  --el-text-color-regular: var(--color-text);
+  --el-text-color-secondary: var(--color-text-secondary);
+  --el-text-color-placeholder: var(--color-text-muted);
+  --el-border-color: var(--color-border);
+  --el-border-color-light: var(--color-border);
+  --el-border-color-lighter: var(--color-border-light);
+  --el-border-radius-base: var(--radius-sm);
+  --el-border-radius-small: 4px;
+  --el-border-radius-round: var(--radius-xl);
+  --el-box-shadow-light: var(--shadow-md);
+  --el-font-family: 'IBM Plex Sans', 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+/* 按钮微交互 */
+.el-button {
+  transition: all var(--transition-normal);
+}
+
+.el-button:not(:disabled):hover {
+  transform: translateY(-1px);
+}
+
+.el-button:not(:disabled):active {
+  transform: translateY(0);
+}
+
+/* 卡片统一样式 */
+.el-card {
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  transition: box-shadow var(--transition-normal), border-color var(--transition-normal);
+}
+
+.el-card:hover {
+  border-color: var(--color-border);
+}
+
+/* 输入框聚焦效果 */
+.el-input__wrapper {
+  transition: box-shadow var(--transition-normal), border-color var(--transition-normal);
+}
+
+.el-input__wrapper:focus-within {
+  box-shadow: 0 0 0 3px rgba(8, 145, 178, 0.15) !important;
+}
+
+/* 表格美化 */
+.el-table {
+  --el-table-border-color: var(--color-border-light);
+  --el-table-header-bg-color: var(--color-bg);
+}
+
+.el-table th.el-table__cell {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+/* 对话框美化 */
+.el-dialog {
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+
+.el-dialog__header {
+  padding: 20px 24px 16px;
+}
+
+.el-dialog__body {
+  padding: 0 24px 24px;
+}
+
+/* 标签页美化 */
+.el-tabs__nav-wrap::after {
+  height: 1px;
+  background: var(--color-border-light);
+}
+
+.el-tabs__item {
+  transition: color var(--transition-fast);
+}
+
+/* 链接样式 */
+a {
+  color: var(--color-primary);
+  text-decoration: none;
+  transition: color var(--transition-fast);
+}
+
+a:hover {
+  color: var(--color-primary-dark);
+}
+
+/* 代码块 */
+code:not([class*="language-"]) {
+  padding: 2px 6px;
+  background: var(--color-primary-bg);
+  border-radius: 4px;
+  font-size: 0.9em;
+  color: var(--color-primary-dark);
+}
+
+/* 焦点可见性 (无障碍) */
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* 减少动画 (无障碍) */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
